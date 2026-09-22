@@ -1,0 +1,61 @@
+{
+  "name": "timepic-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TimePic 离线批量图片水印工具",
+  "author": "TimePic",
+  "license": "UNLICENSED",
+  "main": "dist-electron/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && vite build && node scripts/build.mjs",
+    "start": "electron .",
+    "test": "node --experimental-strip-types --test tests/core.test.ts tests/executable-retry.test.mjs",
+    "test:e2e": "npm run build && playwright test",
+    "pack": "npm run build && node scripts/package.mjs dir",
+    "dist": "npm run build && node scripts/package.mjs zip"
+  },
+  "build": {
+    "appId": "com.timepic.desktop",
+    "productName": "TimePic",
+    "asar": true,
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "extraFiles": [
+      {
+        "from": "使用说明.txt",
+        "to": "使用说明.txt"
+      }
+    ],
+    "artifactName": "TimePic-Desktop-${version}-win-${arch}.${ext}",
+    "win": {
+      "target": [
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    }
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@types/node": "26.6.2",
+    "electron": "44.4.3",
+    "electron-builder": "26.15.3",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2",
+    "vite": "8.3.0"
+  },
+  "type": "module"
+}

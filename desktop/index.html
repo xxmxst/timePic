@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; worker-src 'self' blob:; connect-src 'self' ws://127.0.0.1:5173; object-src 'none'; base-uri 'none'; form-action 'none'" />
+    <title>TimePic · 图片水印</title>
+    <link rel="icon" href="./icon.png" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand"><span class="brand-mark"><svg viewBox="0 0 32 32" aria-hidden="true"><path d="M5 10h6l2-4h6l2 4h6v16H5z"/><circle cx="16" cy="18" r="5"/><path d="M23 13h1"/></svg></span><div><h1>TimePic<span>桌面版</span></h1><p>给照片，留下时间与地点。</p></div></div>
+      <div class="header-right"><span class="local-badge"><i></i> 离线处理</span><span class="header-divider"></span><span>原图始终保留</span></div>
+    </header>
+    <main class="workspace">
+      <aside class="panel library">
+        <div class="panel-heading"><div><span class="eyebrow">01 / IMPORT</span><h2>选择图片 <span id="photo-count" class="count">0</span></h2></div><button id="add-images" class="icon-button" title="添加图片" aria-label="添加图片">＋</button></div>
+        <div class="selection-bar"><label class="check-label"><input id="select-all" type="checkbox" aria-label="全选图片" />全选</label><button id="remove-selected" class="text-button">移除选中</button></div>
+        <div id="photo-list" class="photo-list" role="list" aria-label="待处理图片"></div>
+        <div id="library-empty" class="library-empty"><div class="empty-stack"><span></span><span></span><span>＋</span></div><strong>从一张照片开始</strong><p>单张或多张，一次添加</p><button id="empty-add" class="secondary-button">选择图片</button></div>
+        <div class="library-foot"><span>JPG · PNG · WebP</span><span>静态图片</span></div>
+      </aside>
+      <section class="panel preview-panel">
+        <div class="panel-heading"><div><span class="eyebrow">02 / PREVIEW</span><h2>水印预览</h2></div><span id="image-dimensions" class="muted">实时预览</span></div>
+        <div id="preview-stage" class="preview-stage">
+          <div id="preview-empty" class="preview-empty"><svg viewBox="0 0 80 80" aria-hidden="true"><rect x="10" y="14" width="60" height="52" rx="8"/><circle cx="29" cy="32" r="6"/><path d="m12 57 20-18 12 11 10-9 16 16"/></svg><h3>让每张照片都有迹可循</h3><p>选择图片后，在这里预览水印效果</p><span>时间 · 地址 · 你的记录</span></div>
+          <div id="canvas-shell" class="canvas-shell" hidden><canvas id="preview-canvas" aria-label="图片水印预览，拖动水印可调整位置"></canvas><div id="watermark-outline" class="watermark-outline"></div></div>
+          <div id="preview-message" class="preview-message" hidden></div>
+        </div>
+        <div class="preview-caption"><span id="current-filename">尚未选择图片</span><span>拖动水印调整位置</span></div>
+        <div class="preview-note"><span class="tiny-dot"></span>预览自动适应窗口，导出保留原像素尺寸</div>
+      </section>
+      <aside class="panel settings-panel">
+        <div class="panel-heading"><div><span class="eyebrow">03 / CUSTOMIZE</span><h2>水印设置</h2></div><span class="gold-label">自定义</span></div>
+        <div class="settings-scroll">
+          <fieldset id="settings-fields">
+            <div class="section-label">水印模板</div>
+            <div class="template-grid" role="group" aria-label="水印模板">
+              <button class="template-card" data-template="simple"><span class="template-sample simple-sample"><b>12:30</b><i></i><i></i></span><span>简洁时间</span></button>
+              <button class="template-card active" data-template="checkin"><span class="template-sample checkin-sample"><small>TIMEPIC</small><b>12:30</b><i></i></span><span>日常打卡</span></button>
+              <button class="template-card" data-template="project"><span class="template-sample project-sample"><small>工程记录</small><i></i><i></i><i></i></span><span>工程记录</span></button>
+            </div>
+            <div class="settings-tabs" role="tablist" aria-label="设置范围"><button id="common-tab" role="tab" aria-selected="true">批量设置</button><button id="individual-tab" role="tab" aria-selected="false">当前图片</button></div>
+            <div id="common-settings">
+              <p class="scope-help">应用于全部图片，单独设置的字段除外</p>
+              <div class="field-title"><label for="common-time">水印时间</label><button id="time-now" class="text-button">填入此刻</button></div>
+              <input id="common-time" type="datetime-local" step="1" min="1900-01-01T00:00:00" max="9999-12-31T23:59:59" />
+              <p class="field-hint">固定时间，可手动修改，不自动走时</p>
+              <label class="field-label" for="common-address">水印地址</label><textarea id="common-address" rows="2" maxlength="300" placeholder="例如：北京市 · 朝阳区 · 望京街道"></textarea>
+            </div>
+            <div id="individual-settings" hidden>
+              <p id="individual-hint" class="scope-help">选择一张图片后，可单独修改时间和地址</p>
+              <label class="check-label field-title"><input id="override-time" type="checkbox" />单独设置时间</label><input id="individual-time" type="datetime-local" step="1" min="1900-01-01T00:00:00" max="9999-12-31T23:59:59" disabled />
+              <label class="check-label field-label"><input id="override-address" type="checkbox" />单独设置地址</label><textarea id="individual-address" rows="2" maxlength="300" placeholder="跟随批量地址" disabled></textarea>
+              <button id="reset-overrides" class="text-button reset-overrides">恢复批量设置</button>
+            </div>
+            <label class="field-label" for="common-note">备注 <span class="muted">选填 · 全部图片共用</span></label><textarea id="common-note" rows="2" maxlength="300" placeholder="写下一句记录…"></textarea>
+            <div class="style-divider"></div>
+            <div class="field-title"><label for="watermark-scale">水印大小</label><output id="scale-value">100%</output></div>
+            <input id="watermark-scale" type="range" min="50" max="150" step="1" value="100" /><div class="range-labels"><span>小</span><span>大</span></div>
+            <div class="field-title position-title"><span>水印位置</span><span class="muted">全部图片共用</span></div>
+            <div class="position-grid" role="group" aria-label="水印位置"><button data-position="0,0">↖ 左上</button><button data-position="1,0">右上 ↗</button><button data-position="0,1" class="active">↙ 左下</button><button data-position="1,1">右下 ↘</button></div>
+          </fieldset>
+        </div>
+      </aside>
+    </main>
+    <footer class="export-panel">
+      <div class="output-row"><span class="folder-icon">▱</span><div class="output-text"><span class="output-label">输出文件夹</span><span id="output-path" class="output-path">选择一个独立文件夹，保存添加水印后的图片</span></div><button id="choose-output" class="secondary-button">选择目录</button><button id="open-output" class="text-button" disabled>打开目录 ↗</button></div>
+      <div class="export-row"><div class="export-status"><span id="status-title">准备好，开始你的记录</span><span id="status-detail">保留原格式 · 原图不变 · 同名自动编号</span><progress id="export-progress" max="1" value="0" hidden aria-label="导出进度"></progress></div><button id="cancel-export" class="secondary-button" hidden>停止导出</button><button id="export-images" class="primary-button" disabled>导出选中图片 <span>0</span> <b>↗</b></button></div>
+    </footer>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <dialog id="error-dialog"><h2>部分图片未能添加</h2><pre id="error-details"></pre><button id="close-errors" class="primary-button">知道了</button></dialog>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

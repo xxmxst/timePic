@@ -1,0 +1,14 @@
+*.iml
+.gradle/
+.kotlin/
+.idea/
+**/build/
+local.properties
+.DS_Store
+.externalNativeBuild/
+.cxx/
+
+# Keep the desktop packaging icon with source code.
+!desktop/build/
+desktop/build/*
+!desktop/build/icon.ico
