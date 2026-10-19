@@ -11,7 +11,18 @@ import org.json.JSONObject
 private val Context.watermarkSettings by preferencesDataStore("watermark_settings")
 
 object ConfigCodec {
+    private fun JSONObject.optFiniteDouble(key: String, fallback: Double? = null): Double? {
+        val value = opt(key)
+        val number = when (value) {
+            is Number -> value.toDouble()
+            is String -> value.toDoubleOrNull()
+            else -> null
+        }
+        return number?.takeIf { it.isFinite() } ?: fallback
+    }
+
     fun encode(config: WatermarkConfig): String = JSONObject().apply {
+        put("schemaVersion", 1)
         put("template", config.template.name)
         put("timeMode", config.timeMode.name)
         put("fixedTime", config.fixedTimeMillis)
@@ -28,20 +39,41 @@ object ConfigCodec {
     fun decode(json: String?): WatermarkConfig = runCatching {
         if (json == null) return WatermarkConfig()
         val obj = JSONObject(json)
+        val template = when (obj.optString("template")) {
+            Template.CHECK_IN.name -> Template.CHECK_IN
+            Template.PROJECT.name -> Template.PROJECT
+            else -> Template.SIMPLE
+        }
+        val timeMode = if (obj.optString("timeMode") == TimeMode.FIXED.name) TimeMode.FIXED else TimeMode.LIVE
+        val source = when (obj.optString("source")) {
+            LocationSource.SEARCH.name -> LocationSource.SEARCH
+            LocationSource.MANUAL.name -> LocationSource.MANUAL
+            else -> LocationSource.CURRENT
+        }
+        val fixedTime = when (val value = obj.opt("fixedTime")) {
+            is Number -> value.toLong()
+            is String -> value.toLongOrNull() ?: 0L
+            else -> 0L
+        }
+        val latitude = obj.optFiniteDouble("lat")?.takeIf { it in -90.0..90.0 }
+        val longitude = obj.optFiniteDouble("lon")?.takeIf { it in -180.0..180.0 }
+        val scale = obj.optFiniteDouble("scale", 1.0)!!.toFloat().coerceIn(.75f, 1.4f)
+        val anchorX = obj.optFiniteDouble("x", 0.0)!!.toFloat().coerceIn(0f, 1f)
+        val anchorY = obj.optFiniteDouble("y", 1.0)!!.toFloat().coerceIn(0f, 1f)
         WatermarkConfig(
-            template = Template.valueOf(obj.optString("template", "SIMPLE")),
-            timeMode = TimeMode.valueOf(obj.optString("timeMode", "LIVE")),
-            fixedTimeMillis = obj.optLong("fixedTime"),
+            template = template,
+            timeMode = timeMode,
+            fixedTimeMillis = fixedTime,
             place = Place(
                 obj.optString("address").take(160),
-                if (obj.has("lat")) obj.getDouble("lat") else null,
-                if (obj.has("lon")) obj.getDouble("lon") else null,
-                LocationSource.valueOf(obj.optString("source", "CURRENT"))
+                latitude,
+                longitude,
+                source
             ),
             note = obj.optString("note").take(100),
-            scale = obj.optDouble("scale", 1.0).toFloat().coerceIn(.75f, 1.4f),
-            anchorX = obj.optDouble("x", 0.0).toFloat().coerceIn(0f, 1f),
-            anchorY = obj.optDouble("y", 1.0).toFloat().coerceIn(0f, 1f)
+            scale = scale,
+            anchorX = anchorX,
+            anchorY = anchorY
         )
     }.getOrDefault(WatermarkConfig())
 }

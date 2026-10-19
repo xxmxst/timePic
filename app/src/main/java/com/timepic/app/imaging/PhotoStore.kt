@@ -57,13 +57,18 @@ class PhotoStore(private val context: Context) {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeFile(file.path, bounds)
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw IOException("无法解码图片，请选择有效的静态照片")
-        val pixelBudget = (Runtime.getRuntime().maxMemory() / 32L).coerceIn(1_000_000, 8_000_000)
+        val sourcePixels = bounds.outWidth.toLong() * bounds.outHeight.toLong()
+        if (sourcePixels > 120_000_000L) throw IOException("照片像素过高，请先缩小后重试")
+        val memoryPixels = (Runtime.getRuntime().maxMemory() / 4L * 22L / 100L)
+            .coerceIn(2_000_000L, 12_000_000L)
+        val pixelBudget = if (maxEdge <= 1600) minOf(memoryPixels, 4_000_000L) else memoryPixels
         var sample = 1
         while (max(bounds.outWidth, bounds.outHeight) / sample > maxEdge ||
-            (bounds.outWidth.toLong() / sample) * (bounds.outHeight / sample) > pixelBudget) sample *= 2
+            (bounds.outWidth.toLong() / sample) * (bounds.outHeight.toLong() / sample) > pixelBudget) sample *= 2
         val bitmap = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply {
             inSampleSize = sample
             inPreferredConfig = Bitmap.Config.ARGB_8888
+            inScaled = false
             inMutable = true
         }) ?: throw IOException("图片读取失败")
         val orientation = runCatching {
@@ -127,7 +132,7 @@ class PhotoStore(private val context: Context) {
                     resolver.update(uri, ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }, null, null)
                 }
                 uri
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 runCatching { resolver.delete(uri, null, null) }
                 throw e
             }
@@ -135,15 +140,21 @@ class PhotoStore(private val context: Context) {
     }
 
     fun validDraft(path: String): Boolean {
-        val file = File(path).canonicalFile
-        return file.parentFile == draftDirectory.canonicalFile && file.isFile
+        return runCatching {
+            val file = File(path).canonicalFile
+            file.parentFile == draftDirectory.canonicalFile && file.isFile && file.length() > 0L
+        }.getOrDefault(false)
     }
 
-    fun discard(path: String) { if (validDraft(path)) File(path).delete() }
+    fun discard(path: String) {
+        runCatching { if (validDraft(path)) File(path).canonicalFile.delete() }
+    }
 
     fun cleanOldDrafts(except: String?) {
-        draftDirectory.listFiles()?.filter {
-            it.path != except && System.currentTimeMillis() - it.lastModified() > 7 * 24 * 60 * 60 * 1000L
-        }?.forEach { it.delete() }
+        runCatching {
+            draftDirectory.listFiles()?.filter {
+                it.path != except && System.currentTimeMillis() - it.lastModified() > 7 * 24 * 60 * 60 * 1000L
+            }?.forEach { it.delete() }
+        }
     }
 }

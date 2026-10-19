@@ -12,8 +12,6 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.*
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -26,7 +24,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -38,6 +42,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.timepic.app.TimePicState
 import com.timepic.app.TimePicViewModel
 import com.timepic.app.model.*
 import kotlinx.coroutines.delay
@@ -69,7 +74,10 @@ private fun TimePicContent(model: TimePicViewModel) {
     var front by rememberSaveable { mutableStateOf(false) }
     var flash by rememberSaveable { mutableStateOf(false) }
     var dialog by rememberSaveable { mutableStateOf<String?>(null) }
+    var showMore by rememberSaveable { mutableStateOf(false) }
+    var pendingCapture by rememberSaveable { mutableStateOf(false) }
     var confirmClose by remember { mutableStateOf(false) }
+    var confirmReplace by rememberSaveable { mutableStateOf(false) }
     fun hasCamera() = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
     var cameraGranted by remember { mutableStateOf(hasCamera()) }
     val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
@@ -80,11 +88,31 @@ private fun TimePicContent(model: TimePicViewModel) {
         if (model.hasLocationPermission()) model.refreshLocation()
         else model.notify("定位权限未开启，可以直接填写地址")
     }
+
+    fun beginCaptureNow() {
+        model.beginCapture()?.let { file ->
+            session.takePhoto(context, file, front,
+                { model.captureFinished(file) }, { model.captureFailed(file) })
+        }
+    }
+
     val storagePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-        if (it) model.savePhoto() else model.notify("保存需要相册写入权限，编辑内容已保留")
+        if (it) {
+            if (pendingCapture) {
+                pendingCapture = false
+                beginCaptureNow()
+            } else model.savePhoto()
+        } else {
+            pendingCapture = false
+            model.notify("保存需要相册写入权限，编辑内容已保留")
+        }
     }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         uri?.let(model::importPhoto)
+    }
+    fun choosePhoto() {
+        if (state.draft != null && state.savedUri == null) confirmReplace = true
+        else picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
     }
     fun requestLocation() {
         if (model.hasLocationPermission()) model.refreshLocation()
@@ -144,139 +172,120 @@ private fun TimePicContent(model: TimePicViewModel) {
 
     val photoStage: @Composable (Modifier) -> Unit = { stageModifier ->
         PhotoStage(
-                    modifier = stageModifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                    modifier = stageModifier,
                     bitmap = state.preview, config = state.config, timestamp = timestamp,
-                    cameraGranted = cameraGranted, session = session, front = front, flash = flash,
+                    session = session, front = front, flash = flash,
                     onCameraError = model::notify,
-                    onEnableCamera = { cameraPermission.launch(Manifest.permission.CAMERA) },
-                    onSettings = ::settings,
                     onMove = { x, y -> model.updateConfig { it.copy(anchorX = x, anchorY = y) } }
                 )
     }
+    val permissionPanel: @Composable (Modifier) -> Unit = { panelModifier ->
+        CameraPermissionPanel(
+            modifier = panelModifier,
+            onEnableCamera = { cameraPermission.launch(Manifest.permission.CAMERA) },
+            onSettings = ::settings
+        )
+    }
+    val topControls: @Composable () -> Unit = {
+        Row(
+            Modifier.fillMaxWidth().height(56.dp).background(Ink.copy(alpha = .82f))
+                .padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (state.draft != null) IconButton(onClick = ::closeEditor) {
+                Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回相机")
+            }
+            Column(Modifier.weight(1f).padding(start = 8.dp)) {
+                Text(if (state.draft == null) "TimePic" else "编辑照片", fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (state.draft != null) Text(
+                    if (state.draft?.imported == true) "相册照片" else "拍摄照片",
+                    color = Muted, fontSize = 10.sp
+                )
+            }
+            IconButton(onClick = ::choosePhoto, enabled = state.ready && state.busy == null) {
+                Icon(Icons.Outlined.PhotoLibrary, "从相册选图")
+            }
+            if (state.draft == null) IconButton(
+                onClick = { flash = !flash },
+                enabled = cameraGranted && session.ready && session.hasFlash && state.busy == null
+            ) {
+                Icon(if (flash) Icons.Outlined.FlashOn else Icons.Outlined.FlashOff,
+                    if (flash) "关闭闪光灯" else "开启闪光灯", tint = if (flash) Gold else Muted)
+            }
+            IconButton(onClick = { showMore = true }, enabled = state.ready && state.busy == null) {
+                Icon(Icons.Outlined.MoreHoriz, "更多设置")
+            }
+        }
+    }
     val editorControls: @Composable () -> Unit = {
-        Column(Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
-                    .padding(top = 12.dp, bottom = 8.dp)) {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-                        if (state.locating) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = Gold)
-                        else Icon(Icons.Outlined.LocationOn, null, Modifier.size(17.dp), tint = Gold)
-                        Spacer(Modifier.width(7.dp))
-                        Column(Modifier.weight(1f).clickable { dialog = "address" }) {
-                            Text(state.config.place.text.ifBlank { "添加拍摄地点" }, maxLines = 1,
-                                overflow = TextOverflow.Ellipsis, fontSize = 13.sp)
-                            Text(state.locationStatus, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 10.sp, color = Muted)
-                        }
-                        IconButton(onClick = ::requestLocation, enabled = !state.locating, modifier = Modifier.size(38.dp)) {
-                            Icon(Icons.Outlined.MyLocation, "重新定位", tint = Gold, modifier = Modifier.size(20.dp))
-                        }
+        Column(
+            Modifier.fillMaxWidth()
+                .background(Panel.copy(alpha = .94f), RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp))
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+        ) {
+            if (state.draft == null) {
+                Row(
+                    Modifier.fillMaxWidth().height(88.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    QuickAction(Icons.Outlined.EditNote, "备注", "编辑备注",
+                        state.ready && state.busy == null) { showMore = false; dialog = "note" }
+                    Box(
+                        Modifier.size(74.dp).border(2.dp, if (session.ready) Gold else Muted, CircleShape)
+                            .semantics { contentDescription = "拍照" }
+                            .clickable(enabled = session.ready && state.ready && state.busy == null, role = Role.Button) {
+                                if (Build.VERSION.SDK_INT <= 28 &&
+                                    ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+                                ) {
+                                    pendingCapture = true
+                                    storagePermission.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                                } else beginCaptureNow()
+                            }.padding(5.dp).background(if (session.ready) Gold else Color(0xFF46505E), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Outlined.CameraAlt, null, tint = Ink, modifier = Modifier.size(30.dp))
                     }
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 9.dp),
-                        horizontalArrangement = Arrangement.SpaceEvenly) {
-                        EditorTool(Icons.Outlined.Schedule, "时间", state.config.timeMode == TimeMode.FIXED) { dialog = "time" }
-                        EditorTool(Icons.Outlined.LocationOn, "地址", state.config.place.source != LocationSource.CURRENT) { dialog = "address" }
-                        EditorTool(Icons.Outlined.EditNote, "备注", state.config.note.isNotBlank()) { dialog = "note" }
-                        EditorTool(Icons.Outlined.Tune, "大小", false) { dialog = "size" }
-                    }
-                    LazyRow(contentPadding = PaddingValues(horizontal = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        items(Template.entries) { template ->
-                            TemplateCard(template, state.config.template == template) {
-                                model.updateConfig { it.copy(template = template) }
-                            }
-                        }
-                    }
-                    if (state.savedUri != null) {
-                        Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Outlined.CheckCircle, null, Modifier.size(16.dp), tint = Gold)
-                            Text("已保存到系统相册", Modifier.weight(1f).padding(start = 6.dp), fontSize = 12.sp, color = Gold)
-                            TextButton(onClick = { openSaved(false) }) { Text("查看") }
-                            TextButton(onClick = { openSaved(true) }) { Text("分享") }
-                        }
-                    }
-                    if (state.draft == null) {
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 28.dp, vertical = 12.dp),
-                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-                            Column(Modifier.width(64.dp).clickable(enabled = state.ready) {
-                                picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                            }, horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(Icons.Outlined.PhotoLibrary, "从相册选图", Modifier.size(27.dp))
-                                Text("相册", fontSize = 11.sp, color = Muted, modifier = Modifier.padding(top = 4.dp))
-                            }
-                            Box(Modifier.size(74.dp).border(2.dp, if (session.ready) Gold else Muted, CircleShape)
-                                .padding(5.dp).background(if (session.ready) Gold else Color(0xFF46505E), CircleShape)
-                                .clickable(enabled = session.ready && state.ready) {
-                                    model.beginCapture()?.let { file ->
-                                        session.takePhoto(context, file, front,
-                                            { model.captureFinished(file) }, { model.captureFailed(file) })
-                                    }
-                                }, contentAlignment = Alignment.Center) {
-                                Icon(Icons.Outlined.CameraAlt, "拍照", tint = Ink, modifier = Modifier.size(30.dp))
-                            }
-                            Column(Modifier.width(64.dp).clickable(enabled = cameraGranted) { front = !front },
-                                horizontalAlignment = Alignment.CenterHorizontally) {
-                                Icon(Icons.Outlined.FlipCameraAndroid, "切换摄像头", Modifier.size(27.dp))
-                                Text("翻转", fontSize = 11.sp, color = Muted, modifier = Modifier.padding(top = 4.dp))
-                            }
-                        }
-                    } else {
-                        Button(onClick = ::save, enabled = state.savedUri == null,
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 12.dp).height(50.dp),
-                            shape = RoundedCornerShape(16.dp)) {
-                            Icon(if (state.savedUri != null) Icons.Outlined.Check else Icons.Outlined.SaveAlt, null, Modifier.size(21.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text(if (state.savedUri != null) "已保存 · 修改后可再次保存" else "保存到相册", fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
+                    QuickAction(Icons.Outlined.MyLocation, if (state.locating) "定位中" else "定位", "获取当前位置",
+                        state.ready && !state.locating && state.busy == null, ::requestLocation)
                 }
+            } else if (state.savedUri != null) {
+                Text("已保存到系统相册", color = Gold, fontSize = 12.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    TextButton(onClick = { openSaved(false) }) { Text("查看") }
+                    TextButton(onClick = { openSaved(true) }) { Text("分享") }
+                    TextButton(onClick = ::closeEditor) { Text("继续拍摄") }
+                }
+            } else {
+                Button(
+                    onClick = ::save,
+                    enabled = state.ready && state.busy == null,
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Icon(Icons.Outlined.SaveAlt, null, Modifier.size(21.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text("保存到相册", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
     }
 
     Scaffold(
         containerColor = Ink,
-        snackbarHost = { SnackbarHost(snackbar) },
+        snackbarHost = { SnackbarHost(snackbar, Modifier.padding(bottom = 104.dp)) },
         contentWindowInsets = WindowInsets.safeDrawing
     ) { insets ->
         Box(Modifier.fillMaxSize().padding(insets)) {
-            Column(Modifier.fillMaxSize()) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (state.draft != null) IconButton(onClick = ::closeEditor) {
-                        Icon(Icons.AutoMirrored.Outlined.ArrowBack, "返回相机")
-                    }
-                    Column(Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(if (state.draft == null) "TimePic" else "编辑照片", fontSize = 25.sp, fontWeight = FontWeight.Bold)
-                            if (state.draft == null) {
-                                Spacer(Modifier.width(7.dp))
-                                Box(Modifier.size(6.dp).background(Gold, CircleShape))
-                            }
-                        }
-                        Text(if (state.draft == null) "把时间与地点，留在照片里" else "调整水印，记录你想留下的细节",
-                            fontSize = 11.sp, color = Muted)
-                    }
-                    if (state.draft == null) {
-                        IconButton(onClick = { flash = !flash }, enabled = cameraGranted && session.hasFlash) {
-                            Icon(if (flash) Icons.Outlined.FlashOn else Icons.Outlined.FlashOff,
-                                if (flash) "关闭闪光灯" else "开启闪光灯", tint = if (flash) Gold else Muted)
-                        }
-                    } else {
-                        Text(if (state.draft?.imported == true) "相册照片" else "拍摄照片", color = Gold, fontSize = 12.sp)
-                    }
-                }
-
-                BoxWithConstraints(Modifier.weight(1f).fillMaxWidth()) {
-                    if (maxWidth > maxHeight) {
-                        Row(Modifier.fillMaxSize()) {
-                            photoStage(Modifier.weight(1f).fillMaxHeight())
-                            Column(Modifier.width(340.dp).fillMaxHeight().verticalScroll(rememberScrollState())) {
-                                editorControls()
-                            }
-                        }
-                    } else {
-                        Column(Modifier.fillMaxSize()) {
-                            photoStage(Modifier.weight(1f).fillMaxWidth())
-                            editorControls()
-                        }
-                    }
-                }
-            }
+            TimePicWorkspace(
+                modifier = Modifier.fillMaxSize(),
+                showPermission = !cameraGranted && state.draft == null,
+                preview = photoStage,
+                permissionPanel = permissionPanel,
+                toolbar = topControls,
+                actions = editorControls
+            )
             if (!state.ready || state.busy != null) {
                 Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .65f))
                     .clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) {},
@@ -284,12 +293,27 @@ private fun TimePicContent(model: TimePicViewModel) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         CircularProgressIndicator(color = Gold)
                         Text(state.busy ?: "正在准备…", Modifier.padding(top = 16.dp), color = Color.White)
+                        if (state.cancelable) {
+                            TextButton(onClick = model::cancelPhotoTask, modifier = Modifier.padding(top = 4.dp)) {
+                                Text("取消", color = Gold)
+                            }
+                        }
                     }
                 }
             }
         }
     }
 
+    if (showMore) MoreSettingsSheet(
+        state = state,
+        front = front,
+        onDismiss = { showMore = false },
+        onEdit = { key -> showMore = false; dialog = key },
+        onTemplate = { template -> model.updateConfig { it.copy(template = template) }; showMore = false },
+        onFlip = { front = !front },
+        onLocation = { showMore = false; requestLocation() },
+        onSettings = { showMore = false; settings() }
+    )
     when (dialog) {
         "address" -> AddressDialog(state, onDismiss = { dialog = null; model.clearSearch() },
             onSearch = model::searchAddress, onQueryChanged = model::clearSearch,
@@ -304,6 +328,16 @@ private fun TimePicContent(model: TimePicViewModel) {
             onScale = { scale -> model.updateConfig { it.copy(scale = scale) } },
             onReset = { model.updateConfig { it.copy(scale = 1f, anchorX = 0f, anchorY = 1f) } })
     }
+    if (confirmReplace) AlertDialog(
+        onDismissRequest = { confirmReplace = false },
+        title = { Text("更换照片？") },
+        text = { Text("选择新照片后将替换当前未保存的编辑，取消选图则保留当前照片。") },
+        confirmButton = { TextButton(onClick = {
+            confirmReplace = false
+            picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+        }) { Text("选择新照片") } },
+        dismissButton = { TextButton(onClick = { confirmReplace = false }) { Text("继续编辑") } }
+    )
     if (confirmClose) AlertDialog(
         onDismissRequest = { confirmClose = false },
         title = { Text("放弃这次编辑？") },
@@ -313,26 +347,114 @@ private fun TimePicContent(model: TimePicViewModel) {
     )
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun EditorTool(icon: ImageVector, label: String, active: Boolean, onClick: () -> Unit) {
-    Column(Modifier.width(66.dp).heightIn(min = 48.dp).clickable(onClick = onClick).padding(vertical = 3.dp),
-        horizontalAlignment = Alignment.CenterHorizontally) {
-        Icon(icon, null, Modifier.size(22.dp), tint = if (active) Gold else Color.White)
-        Text(label, fontSize = 11.sp, color = if (active) Gold else Muted, modifier = Modifier.padding(top = 3.dp))
+private fun MoreSettingsSheet(
+    state: TimePicState,
+    front: Boolean,
+    onDismiss: () -> Unit,
+    onEdit: (String) -> Unit,
+    onTemplate: (Template) -> Unit,
+    onFlip: () -> Unit,
+    onLocation: () -> Unit,
+    onSettings: () -> Unit
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            Modifier.fillMaxWidth().navigationBarsPadding().verticalScroll(rememberScrollState())
+                .padding(start = 20.dp, end = 20.dp, bottom = 18.dp)
+        ) {
+            Text("更多设置", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+            Text("调整水印内容和样式", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 4.dp, bottom = 10.dp))
+            MoreSettingRow(Icons.Outlined.Schedule, "时间",
+                if (state.config.timeMode == TimeMode.FIXED) "固定时间" else "使用实时") { onEdit("time") }
+            MoreSettingRow(Icons.Outlined.LocationOn, "地址",
+                state.config.place.text.ifBlank { "未设置地址" }) { onEdit("address") }
+            MoreSettingRow(Icons.Outlined.FlipCameraAndroid, "翻转摄像头",
+                if (front) "当前使用前置摄像头" else "当前使用后置摄像头") { onFlip() }
+            MoreSettingRow(Icons.Outlined.Tune, "大小与位置",
+                "${(state.config.scale * 100).toInt()}% · 可在预览中拖动") { onEdit("size") }
+            MoreSettingRow(Icons.Outlined.MyLocation, "当前位置",
+                if (state.locating) "正在获取位置…" else state.locationStatus) { onLocation() }
+            Text("水印模板", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 14.dp, bottom = 8.dp))
+            Template.entries.forEach { template ->
+                FilterChip(
+                    selected = state.config.template == template,
+                    onClick = { onTemplate(template) },
+                    label = { Text("${template.title} · ${template.description.substringBefore(" ·")}") },
+                    leadingIcon = if (state.config.template == template) {
+                        { Icon(Icons.Outlined.Check, null, Modifier.size(16.dp)) }
+                    } else null,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp)
+                )
+            }
+            TextButton(onClick = onSettings, modifier = Modifier.padding(top = 8.dp)) {
+                Text("打开应用权限设置")
+            }
+        }
     }
 }
 
 @Composable
-private fun TemplateCard(template: Template, selected: Boolean, onClick: () -> Unit) {
-    Column(Modifier.width(130.dp).height(74.dp)
-        .background(if (selected) Color(0xFF39362E) else Color(0xFF252E39), RoundedCornerShape(13.dp))
-        .border(1.dp, if (selected) Gold else Color.Transparent, RoundedCornerShape(13.dp))
-        .clickable(onClick = onClick).padding(12.dp), verticalArrangement = Arrangement.SpaceBetween) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(template.title, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
-                color = if (selected) Gold else Color.White, modifier = Modifier.weight(1f))
-            if (selected) Icon(Icons.Outlined.Check, null, Modifier.size(15.dp), tint = Gold)
+private fun MoreSettingRow(icon: ImageVector, title: String, summary: String, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 52.dp).clickable(onClick = onClick).padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(icon, null, Modifier.size(22.dp), tint = Gold)
+        Column(Modifier.weight(1f).padding(start = 14.dp)) {
+            Text(title, fontSize = 14.sp)
+            Text(summary, color = Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Text(template.description.substringBefore(" ·"), fontSize = 10.sp, color = Muted)
+        Icon(Icons.Outlined.ChevronRight, null, Modifier.size(18.dp), tint = Muted)
+    }
+}
+
+/** Keep foreground controls outside the preview's gesture area, in every permission state. */
+@Composable
+internal fun TimePicWorkspace(
+    modifier: Modifier = Modifier,
+    showPermission: Boolean,
+    preview: @Composable (Modifier) -> Unit,
+    permissionPanel: @Composable (Modifier) -> Unit,
+    toolbar: @Composable () -> Unit,
+    actions: @Composable () -> Unit
+) {
+    val density = LocalDensity.current
+    var toolbarHeight by remember { mutableStateOf(56.dp) }
+    var actionsHeight by remember { mutableStateOf(100.dp) }
+    BoxWithConstraints(modifier.testTag("workspace")) {
+        val landscape = maxWidth > maxHeight
+        val railWidth = if (landscape) minOf(300.dp, maxWidth * .38f) else 0.dp
+        val contentModifier = Modifier.fillMaxSize()
+            .padding(top = toolbarHeight, bottom = if (landscape) 0.dp else actionsHeight, end = railWidth)
+        if (showPermission) permissionPanel(contentModifier) else preview(contentModifier)
+        Box(Modifier.align(Alignment.TopCenter).fillMaxWidth().testTag("toolbar")
+            .onSizeChanged { toolbarHeight = with(density) { it.height.toDp() } }) {
+            toolbar()
+        }
+        if (landscape) {
+            Box(Modifier.align(Alignment.CenterEnd).width(railWidth).fillMaxHeight()
+                .padding(top = toolbarHeight).background(Panel.copy(alpha = .92f)),
+                contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxWidth().testTag("main-actions")) { actions() }
+            }
+        } else {
+            Box(Modifier.align(Alignment.BottomCenter).fillMaxWidth().testTag("main-actions")
+                .onSizeChanged { actionsHeight = with(density) { it.height.toDp() } }) {
+                actions()
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuickAction(icon: ImageVector, label: String, description: String, enabled: Boolean, onClick: () -> Unit) {
+    Column(Modifier.width(64.dp).heightIn(min = 48.dp)
+        .semantics { contentDescription = description }
+        .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+        .padding(vertical = 4.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Icon(icon, null, Modifier.size(24.dp), tint = if (enabled) Color.White else Muted)
+        Text(label, fontSize = 11.sp, color = Muted, modifier = Modifier.padding(top = 4.dp))
     }
 }

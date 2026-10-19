@@ -39,44 +39,58 @@ fun PhotoStage(
     bitmap: Bitmap?,
     config: WatermarkConfig,
     timestamp: Long,
-    cameraGranted: Boolean,
     session: CameraSession,
     front: Boolean,
     flash: Boolean,
     onCameraError: (String) -> Unit,
-    onEnableCamera: () -> Unit,
-    onSettings: () -> Unit,
     onMove: (Float, Float) -> Unit
 ) {
-    BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
-        val aspect = bitmap?.let { it.width.toFloat() / it.height } ?: if (maxWidth > maxHeight) 4f / 3f else 3f / 4f
-        val frameWidth = minOf(maxWidth, maxHeight * aspect)
-        Box(Modifier.width(frameWidth).height(frameWidth / aspect).clip(RoundedCornerShape(18.dp))
+    BoxWithConstraints(modifier, contentAlignment = Alignment.BottomCenter) {
+        val aspect = bitmap?.let { it.width.toFloat() / it.height }
+        val frameModifier = if (bitmap == null) Modifier.fillMaxSize() else {
+            val frameWidth = minOf(maxWidth, maxHeight * aspect!!)
+            Modifier.width(frameWidth).height(frameWidth / aspect)
+        }
+        Box(frameModifier.clip(RoundedCornerShape(18.dp))
             .background(Color(0xFF080B0F))) {
             if (bitmap != null) {
                 Image(bitmap.asImageBitmap(), "待编辑照片", Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
-            } else if (cameraGranted) {
-                CameraPreview(Modifier.fillMaxSize(), session, front, flash, onCameraError)
             } else {
-                Column(Modifier.align(Alignment.Center).padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(Icons.Outlined.CameraAlt, null, Modifier.size(38.dp), tint = Muted)
-                    Text("开启相机，记录此刻", Modifier.padding(top = 12.dp), fontSize = 15.sp)
-                    Text("也可以从下方相册选择照片", Modifier.padding(top = 5.dp), fontSize = 11.sp, color = Muted)
-                    Button(onClick = onEnableCamera, modifier = Modifier.padding(top = 12.dp)) { Text("开启相机") }
-                    TextButton(onClick = onSettings) { Text("权限设置", fontSize = 11.sp) }
-                }
+                CameraPreview(Modifier.fillMaxSize(), session, front, flash, onCameraError)
             }
-            if (bitmap != null || cameraGranted) {
-                WatermarkLayer(Modifier.fillMaxSize(), config, timestamp, onMove) {
-                    if (bitmap == null) session.focus(it.x, it.y)
-                }
-                Text(
-                    if (bitmap != null) "拖动水印调整位置" else if (config.timeMode == TimeMode.FIXED) "固定时间" else "实时预览",
-                    modifier = Modifier.align(Alignment.TopStart).padding(12.dp)
-                        .background(Color.Black.copy(alpha = .42f), RoundedCornerShape(20.dp))
-                        .padding(horizontal = 10.dp, vertical = 5.dp),
-                    color = Color.White, fontSize = 10.sp
-                )
+            WatermarkLayer(Modifier.fillMaxSize(), config, timestamp, onMove) {
+                if (bitmap == null) session.focus(it.x, it.y)
+            }
+            Text(
+                if (bitmap != null) "拖动水印调整位置" else if (config.timeMode == TimeMode.FIXED) "固定时间" else "实时预览",
+                modifier = Modifier.align(Alignment.TopStart).padding(12.dp)
+                    .background(Color.Black.copy(alpha = .42f), RoundedCornerShape(20.dp))
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                color = Color.White, fontSize = 10.sp
+            )
+        }
+    }
+}
+
+@Composable
+fun CameraPermissionPanel(
+    modifier: Modifier,
+    onEnableCamera: () -> Unit,
+    onSettings: () -> Unit
+) {
+    Box(modifier, contentAlignment = Alignment.Center) {
+        Column(
+            Modifier.padding(20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Icon(Icons.Outlined.CameraAlt, null, Modifier.size(42.dp), tint = Muted)
+            Text("开启相机，记录此刻", Modifier.padding(top = 12.dp), fontSize = 15.sp)
+            Text("也可以从下方相册选择照片", Modifier.padding(top = 5.dp), fontSize = 11.sp, color = Muted)
+            Button(onClick = onEnableCamera, modifier = Modifier.padding(top = 14.dp)) {
+                Text("开启相机")
+            }
+            TextButton(onClick = onSettings) {
+                Text("权限设置", fontSize = 11.sp)
             }
         }
     }

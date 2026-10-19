@@ -21,6 +21,7 @@ data class TimePicState(
     val draft: PhotoDraft? = null,
     val preview: Bitmap? = null,
     val busy: String? = null,
+    val cancelable: Boolean = false,
     val locating: Boolean = false,
     val locationStatus: String = "获取当前位置，或填写地址",
     val searchBusy: Boolean = false,
@@ -39,6 +40,8 @@ class TimePicViewModel(application: Application, private val savedState: SavedSt
     private var locationJob: Job? = null
     private var searchJob: Job? = null
     private var persistJob: Job? = null
+    private var importJob: Job? = null
+    private var exportJob: Job? = null
     private var captureTimestamp = 0L
     private var locationGeneration = 0
     private var searchGeneration = 0
@@ -50,6 +53,11 @@ class TimePicViewModel(application: Application, private val savedState: SavedSt
             val path = savedState.get<String>("draftPath")
             val draft = path?.takeIf { photos.validDraft(it) }?.let {
                 PhotoDraft(it, savedState["draftTime"] ?: System.currentTimeMillis(), savedState["imported"] ?: false)
+            }
+            if (path != null && draft == null) {
+                savedState.remove<String>("draftPath")
+                savedState.remove<Long>("draftTime")
+                savedState.remove<Boolean>("imported")
             }
             if (draft == null && config.place.source == LocationSource.CURRENT) config = config.copy(place = Place())
             mutableState.update { it.copy(config = config, busy = if (draft != null) "恢复编辑中的照片…" else null) }
@@ -168,36 +176,40 @@ class TimePicViewModel(application: Application, private val savedState: SavedSt
         stopLocation()
         captureTimestamp = state.value.config.resolveTime(System.currentTimeMillis())
         return try {
-            photos.newCaptureFile().also { mutableState.update { it.copy(busy = "正在拍摄…", savedUri = null) } }
+            photos.newCaptureFile().also { mutableState.update { it.copy(busy = "正在拍摄…", cancelable = false, savedUri = null) } }
         } catch (_: Exception) { notify("无法创建照片，请检查存储空间"); null }
     }
 
     fun captureFailed(file: File?) {
         file?.let { photos.discard(it.path) }
-        mutableState.update { it.copy(busy = null) }
+        mutableState.update { it.copy(busy = null, cancelable = false) }
         notify("拍摄失败，请重试")
     }
 
     fun captureFinished(file: File) {
-        viewModelScope.launch { openDraft(file, captureTimestamp, false) }
+        importJob = viewModelScope.launch {
+            if (openDraft(file, captureTimestamp, false)) savePhoto(auto = true)
+        }
     }
 
     fun importPhoto(uri: Uri) {
         if (state.value.busy != null) return
         stopLocation()
         val timestamp = state.value.config.resolveTime(System.currentTimeMillis())
-        mutableState.update { it.copy(busy = "正在读取照片…", savedUri = null) }
-        viewModelScope.launch {
+        mutableState.update { it.copy(busy = "正在读取照片…", cancelable = true, savedUri = null) }
+        importJob = viewModelScope.launch {
             try { openDraft(photos.import(uri), timestamp, true) }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (_: Exception) {
-                mutableState.update { it.copy(busy = null) }
+                mutableState.update { it.copy(busy = null, cancelable = false) }
                 notify("照片无法读取，请选择有效的静态图片")
+            } finally {
+                if (state.value.busy == null) mutableState.update { it.copy(cancelable = false) }
             }
         }
     }
 
-    private suspend fun openDraft(file: File, timestamp: Long, imported: Boolean) {
+    private suspend fun openDraft(file: File, timestamp: Long, imported: Boolean): Boolean {
         try {
             val bitmap = photos.preview(file)
             val draft = PhotoDraft(file.path, timestamp, imported)
@@ -205,35 +217,48 @@ class TimePicViewModel(application: Application, private val savedState: SavedSt
             savedState["draftPath"] = file.path
             savedState["draftTime"] = timestamp
             savedState["imported"] = imported
-            mutableState.update { it.copy(draft = draft, preview = bitmap, busy = null, savedUri = null) }
+            mutableState.update { it.copy(draft = draft, preview = bitmap, busy = null, cancelable = false, savedUri = null) }
+            return true
         } catch (cancelled: CancellationException) {
             photos.discard(file.path)
             throw cancelled
         } catch (_: Exception) {
             photos.discard(file.path)
-            mutableState.update { it.copy(busy = null) }
+            mutableState.update { it.copy(busy = null, cancelable = false) }
             notify("图片无法解码，请重新拍摄或选择照片")
+            return false
         } catch (_: OutOfMemoryError) {
             photos.discard(file.path)
-            mutableState.update { it.copy(busy = null) }
+            mutableState.update { it.copy(busy = null, cancelable = false) }
             notify("照片过大，内存不足，请选择较小的图片")
+            return false
         }
     }
 
-    fun savePhoto() {
+    fun savePhoto(auto: Boolean = false) {
         val snapshot = state.value
         val draft = snapshot.draft ?: return
         if (snapshot.busy != null) return
-        mutableState.update { it.copy(busy = "正在生成并保存水印照片…") }
-        viewModelScope.launch {
+        mutableState.update { it.copy(busy = if (auto) "正在自动保存拍摄照片…" else "正在生成并保存水印照片…", cancelable = true) }
+        exportJob = viewModelScope.launch {
             try {
                 val uri = photos.export(draft, snapshot.config)
                 mutableState.update { it.copy(savedUri = uri) }
+                if (auto) notify("拍摄照片已自动保存到相册")
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (_: OutOfMemoryError) { notify("内存不足，照片仍保留在编辑页，请重试") }
             catch (_: Exception) { notify("保存失败，请检查相册权限和可用空间后重试") }
-            finally { mutableState.update { it.copy(busy = null) } }
+            finally { mutableState.update { it.copy(busy = null, cancelable = false) } }
         }
+    }
+
+    fun cancelPhotoTask() {
+        if (!state.value.cancelable) return
+        importJob?.cancel()
+        exportJob?.cancel()
+        importJob = null
+        exportJob = null
+        mutableState.update { it.copy(busy = null, cancelable = false) }
     }
 
     fun closeDraft() {
@@ -242,8 +267,13 @@ class TimePicViewModel(application: Application, private val savedState: SavedSt
         savedState.remove<String>("draftPath")
         savedState.remove<Long>("draftTime")
         savedState.remove<Boolean>("imported")
-        mutableState.update { it.copy(draft = null, preview = null, savedUri = null) }
+        mutableState.update { it.copy(draft = null, preview = null, busy = null, cancelable = false, savedUri = null) }
     }
 
-    override fun onCleared() { location.close(); super.onCleared() }
+    override fun onCleared() {
+        importJob?.cancel()
+        exportJob?.cancel()
+        location.close()
+        super.onCleared()
+    }
 }
